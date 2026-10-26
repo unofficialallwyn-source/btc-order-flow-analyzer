@@ -1,0 +1,12 @@
+services:
+  collector:
+    build: .
+    restart: unless-stopped
+    environment:
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      AZURE_CONTAINER: ${AZURE_CONTAINER:-btc-orderflow}
+      SYMBOL: BTCUSD
+      FLUSH_SECONDS: 300
+      BOOK_SAMPLE_SECONDS: 10
+    volumes:
+      - ./spool:/data
