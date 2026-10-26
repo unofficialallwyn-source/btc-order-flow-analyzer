@@ -11,6 +11,7 @@ from streamlit_autorefresh import st_autorefresh
 from analytics import delta_bars,footprint,book_imbalance,classify_spike
 from live_feed import LiveFeed
 from flow_interpretation import interpret_trade_window
+from signal_quality import evaluate_signal
 
 API="https://api.india.delta.exchange/v2/history/candles"
 IST=ZoneInfo("Asia/Kolkata")
@@ -124,6 +125,34 @@ if candles:
             st.dataframe(signal_df.rename(columns={"time":"Time (IST)","confirmed":"Confirmed (IST)"}),use_container_width=True,hide_index=True)
         else:
             st.write("No confirmed signals in the selected sample.")
+        st.subheader("Latest confirmed reversal · Signal quality")
+        if signals:
+            latest_signal=signals[-1]
+            # Retrieve independent 5m history even when user views the 15m chart.
+            try:
+                bars5=history("5m",120)
+                complete5=[c for c in bars5 if c["time"]+300<=int(time.time())]
+                quality=evaluate_signal(
+                    latest_signal,complete,complete5,trades,live["connected_at"],
+                    disconnections=live["disconnections"],
+                    stale=live["status"]!="connected" or not live["latest_trade_at"]
+                    or time.time()-live["latest_trade_at"]>30,
+                    now=int(time.time()))
+                st.caption(f"Spike: {ist_label(latest_signal['time'])} · Confirmation closes: {ist_label(latest_signal['confirmed']+900)}")
+                if quality["score"] is None:
+                    st.info(quality["reason"])
+                else:
+                    st.metric("Evidence-weighted score",
+                              f"{quality['score']}/{quality['possible']}",
+                              help="Points from available evidence only, not a win probability")
+                    if quality["status"]!="complete":
+                        st.warning("PARTIAL DATA — missing execution flow or 5m history. Do not compare this score with full 100-point scores.")
+                    st.dataframe(pd.DataFrame(quality["components"]),hide_index=True,use_container_width=True)
+                    st.caption("This is a diagnostic checklist, not a win probability or trade recommendation. "
+                               "5m confirmation checks the breakout close; it is not a full market-structure model.")
+            except (httpx.HTTPError,ValueError) as exc:
+                st.warning(f"Quality analysis unavailable: {exc}")
+
     else:
         st.caption("Select 15m to see volume-spike reversal signals.")
 
@@ -158,7 +187,7 @@ if book:
     with a:
         st.write("Asks")
         st.dataframe(pd.DataFrame(book["asks"][:15],columns=["Price","Contracts"]),hide_index=True,use_container_width=True)
-    st.caption(f"Exchange book timestamp: {ist_label(book["timestamp"])}")
+    st.caption(f"Exchange book timestamp: {ist_label(book['timestamp'])}")
 else:
     st.info("Waiting for order-book snapshot.")
 st.caption("Not investment advice. Feed gaps and partial sessions make CVD unsuitable for unqualified historical comparisons. No trade execution functionality.")
