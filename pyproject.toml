@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "btc-orderflow-analyzer"
+version = "1.0.0"
+description = "Read-only BTC order-flow collector and volume-climax reversal analytics"
+requires-python = ">=3.11"
+dependencies = ["websockets>=12,<16", "httpx>=0.27,<1", "azure-storage-blob>=12.20,<13"]
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+[project.scripts]
+orderflow = "orderflow.cli:main"
+[tool.setuptools.packages.find]
+where = ["src"]
+[tool.pytest.ini_options]
+pythonpath = ["src"]
