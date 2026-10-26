@@ -1,6 +1,7 @@
 """Streamlit BTC live chart. No authenticated endpoints, order placement, or storage required."""
 import time
 from datetime import datetime,timezone
+from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 import plotly.graph_objects as go
@@ -9,11 +10,20 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from analytics import delta_bars,footprint,book_imbalance,classify_spike
 from live_feed import LiveFeed
+from flow_interpretation import interpret_trade_window
 
 API="https://api.india.delta.exchange/v2/history/candles"
+IST=ZoneInfo("Asia/Kolkata")
+
+def ist_label(ts):
+    return datetime.fromtimestamp(float(ts),timezone.utc).astimezone(IST).strftime("%Y-%m-%d %I:%M:%S %p IST")
+
+def ist_plot(series):
+    return pd.to_datetime(series,unit="s",utc=True).dt.tz_convert(IST).dt.tz_localize(None)
+
 st.set_page_config(page_title="BTC Order Flow",page_icon="📈",layout="wide")
 st.title("BTCUSD · Live Order Flow")
-st.caption("Delta Exchange India public market feed | read-only | live CVD begins when this dashboard connects")
+st.caption("Delta Exchange India public market feed | read-only | live CVD begins when this dashboard connects | All displayed times are IST")
 
 @st.cache_resource
 def feed():
@@ -69,9 +79,28 @@ m3.metric("Window net delta",f"{delta:+,.0f} contracts")
 m4.metric("Top 10 book imbalance",f"{imb:+.1%}" if imb is not None else "—")
 st.caption(f"Source status: {live['status']} | tape window {window}m | book snapshot may change; resting size is not executed volume")
 
+st.subheader("Live Order-Flow Interpretation")
+reading=interpret_trade_window(trades)
+if live["status"]!="connected" or not live["latest_trade_at"] or time.time()-live["latest_trade_at"]>30 or live["disconnections"]:
+    st.warning("Interpretation may contain gaps or stale trades; absorption is a hypothesis, not proof.")
+if reading["state"]=="insufficient":
+    st.info(reading["message"])
+else:
+    st.metric("Price change in selected trade window",f"{reading['price_change_pct']:+.3f}%")
+    if reading["state"] in ("selling_pressure","seller_absorption"):
+        st.error(f"**{reading['title']}** — {reading['message']}")
+    else:
+        st.success(f"**{reading['title']}** — {reading['message']}")
+    st.caption(f"Tape from {ist_label(trades[0]['timestamp'])} to {ist_label(trades[-1]['timestamp'])}.")
+with st.expander("Interpretation guide"):
+    st.markdown("""1. **Negative delta + falling price:** Selling aggression is moving price lower.
+2. **Negative delta + stable or rising price:** Buyers may be absorbing sell orders.
+3. **Positive delta + rising price:** Buying aggression is moving price higher.
+4. **Positive delta + falling or stagnant price:** Sellers may be absorbing buy orders.""")
+
 if candles:
     frame=pd.DataFrame(candles)
-    frame["dt"]=pd.to_datetime(frame["time"],unit="s",utc=True)
+    frame["dt"]=ist_plot(frame["time"])
     chart=make_subplots(rows=2,cols=1,shared_xaxes=True,vertical_spacing=.04,
                         row_heights=[.77,.23])
     chart.add_trace(go.Candlestick(x=frame["dt"],open=frame["open"],high=frame["high"],
@@ -89,7 +118,10 @@ if candles:
         signals=classify_spike(complete)
         st.subheader("Confirmed 15m volume-spike reversals")
         if signals:
-            st.dataframe(pd.DataFrame(signals[-12:]),use_container_width=True,hide_index=True)
+            signal_df=pd.DataFrame(signals[-12:])
+            for col in ("time","confirmed"):
+                signal_df[col]=signal_df[col].map(ist_label)
+            st.dataframe(signal_df.rename(columns={"time":"Time (IST)","confirmed":"Confirmed (IST)"}),use_container_width=True,hide_index=True)
         else:
             st.write("No confirmed signals in the selected sample.")
     else:
@@ -100,10 +132,13 @@ with left:
     st.subheader("True aggressor CVD (session only)")
     if flows:
         f=pd.DataFrame(flows)
-        cvdfig=go.Figure(go.Scatter(x=f["time"],y=f["cvd"],mode="lines",name="CVD"))
+        f["time_ist"]=pd.to_datetime(f["time"],utc=True).dt.tz_convert(IST).dt.tz_localize(None)
+        cvdfig=go.Figure(go.Scatter(x=f["time_ist"],y=f["cvd"],mode="lines",name="CVD"))
         cvdfig.update_layout(template="plotly_dark",height=260,margin=dict(l=10,r=10,t=20,b=10))
         st.plotly_chart(cvdfig,use_container_width=True)
-        st.dataframe(f[["time","buy","sell","delta"]].tail(12),hide_index=True,use_container_width=True)
+        flow_table=f[["time_ist","buy","sell","delta"]].tail(12).copy()
+        flow_table["time_ist"]=flow_table["time_ist"].dt.strftime("%Y-%m-%d %I:%M:%S %p IST")
+        st.dataframe(flow_table.rename(columns={"time_ist":"Time (IST)"}),hide_index=True,use_container_width=True)
     else:
         st.info("Waiting for public trades. Historical exchange CVD is not available from OHLCV.")
 with right:
@@ -123,7 +158,7 @@ if book:
     with a:
         st.write("Asks")
         st.dataframe(pd.DataFrame(book["asks"][:15],columns=["Price","Contracts"]),hide_index=True,use_container_width=True)
-    st.caption(f"Exchange book timestamp: {datetime.fromtimestamp(book['timestamp'],timezone.utc).isoformat()}")
+    st.caption(f"Exchange book timestamp: {ist_label(book["timestamp"])}")
 else:
     st.info("Waiting for order-book snapshot.")
 st.caption("Not investment advice. Feed gaps and partial sessions make CVD unsuitable for unqualified historical comparisons. No trade execution functionality.")
